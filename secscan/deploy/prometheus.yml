@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: secscan-api
+    static_configs:
+      - targets: ["secscan:8080"]
+  - job_name: secscan-worker       # descobre todas as réplicas do worker via DNS do compose
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9100

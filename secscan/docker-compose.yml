@@ -1,0 +1,71 @@
+# Ambiente de demonstração: scanner + alvo de teste + Prometheus.
+#   docker compose up --build            (API + worker + PostgreSQL + alvo + Prometheus)
+#   docker compose up --build --scale worker=3
+services:
+  secscan:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      SECSCAN_API_KEY: ${SECSCAN_API_KEY:-dev-key-change-me}
+      SECSCAN_ALLOW_PRIVATE: "true"   # necessário para escanear o container "target" (rede privada)
+      SECSCAN_DATABASE_URL: postgres://secscan:${POSTGRES_PASSWORD:-secscan-dev}@db:5432/secscan?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/secscan", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  worker:            # consome a fila; escale com: docker compose up --scale worker=3
+    build: .
+    command: ["worker"]
+    environment:
+      SECSCAN_DATABASE_URL: postgres://secscan:${POSTGRES_PASSWORD:-secscan-dev}@db:5432/secscan?sslmode=disable
+      SECSCAN_ALLOW_PRIVATE: "true"
+      SECSCAN_ADDR: ":9100"            # /healthz e /metrics do worker
+      SECSCAN_WORKER_CONCURRENCY: "4"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/secscan", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 40s             # deixa jobs em andamento terminarem (worker espera até 30s)
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: secscan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secscan-dev}
+      POSTGRES_DB: secscan
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # dados persistem entre "docker compose down/up"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secscan -d secscan"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # sem "ports": o banco só é acessível pela rede interna do compose
+
+  target:            # alvo propositalmente "simples" para gerar achados (sem TLS/cabeçalhos)
+    image: nginx:alpine
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [secscan]
+
+volumes:
+  pgdata:
